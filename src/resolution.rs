@@ -9,14 +9,14 @@ use apache_avro::{
     writer::datum::GenericDatumWriter,
 };
 
-use crate::json::{AvroJson, physical_schema};
+use crate::json::{JsonDecoder, physical_schema};
 
 pub struct Resolver<'a> {
     writer: &'a Schema,
     reader: &'a Schema,
     writer_names: ResolvedSchema<'a>,
     reader_names: ResolvedSchema<'a>,
-    reader_json: AvroJson<'a>,
+    reader_json: JsonDecoder<'a>,
 }
 
 impl<'a> Resolver<'a> {
@@ -26,7 +26,7 @@ impl<'a> Resolver<'a> {
             reader,
             writer_names: ResolvedSchema::new(writer)?,
             reader_names: ResolvedSchema::new(reader)?,
-            reader_json: AvroJson::new(reader)?,
+            reader_json: JsonDecoder::new(reader)?,
         })
     }
 

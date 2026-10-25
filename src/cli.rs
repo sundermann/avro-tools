@@ -6,7 +6,7 @@ use clap::{Args, Parser, Subcommand};
 #[derive(Debug, Parser)]
 #[command(
     version,
-    about = "Convert between Avro object container files and Avro JSON"
+    about = "Convert between Avro object container files and plain JSON"
 )]
 pub struct Cli {
     #[command(subcommand)]

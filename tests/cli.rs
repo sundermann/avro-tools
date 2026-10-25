@@ -55,15 +55,15 @@ fn roundtrip(schema: &str, values: &str) -> Vec<Json> {
 }
 
 #[test]
-fn primitives_and_nonfinite_numbers() {
+fn primitives_use_standard_json() {
     for (schema, values) in [
         (r#""null""#, "null\nnull"),
         (r#""boolean""#, "true false"),
         (r#""int""#, "-2147483648 2147483647"),
         (r#""long""#, "-9223372036854775808 9223372036854775807"),
         (r#""string""#, r#""hello" "世界\n😀""#),
-        (r#""double""#, r#"-0.0 1.25 "NaN" "Infinity" "-Infinity""#),
-        (r#""float""#, r#"-0.0 1.25 "NaN" "Infinity" "-Infinity""#),
+        (r#""double""#, "-0.0 1.25"),
+        (r#""float""#, "-0.0 1.25"),
     ] {
         assert_eq!(
             roundtrip(schema, values),
@@ -74,7 +74,28 @@ fn primitives_and_nonfinite_numbers() {
 }
 
 #[test]
-fn complex_types_and_qualified_union_tags() {
+fn rejects_nonfinite_avro_numbers_in_plain_json_output() {
+    for number in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let mut writer = Writer::new(&Schema::Double, Vec::new()).unwrap();
+        writer.append_value(Value::Double(number)).unwrap();
+        let avro = writer.into_inner().unwrap();
+        let output = invoke(&["tojson", "-"], &avro);
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("encoding JSON"));
+    }
+}
+
+#[test]
+fn record_defaults_and_extra_fields_follow_serde_conventions() {
+    let schema = r#"{"type":"record","name":"R","fields":[{"name":"id","type":"long"},{"name":"name","type":["null","string"],"default":"guest"},{"name":"data","type":"bytes","default":"\u00ff"}]}"#;
+    assert_eq!(
+        roundtrip(schema, r#"{"id":1,"extra":true}"#),
+        vec![json!({"id":1,"name":"guest","data":[255]})]
+    );
+}
+
+#[test]
+fn complex_types_use_plain_values_and_byte_arrays() {
     let schema = r#"{"type":"record","name":"example.Event","fields":[
         {"name":"id","type":"long"},
         {"name":"payload","type":"bytes"},
@@ -84,13 +105,13 @@ fn complex_types_and_qualified_union_tags() {
         {"name":"counts","type":{"type":"map","values":"int"}},
         {"name":"choice","type":["null","string","Code","Status",{"type":"record","name":"Child","fields":[{"name":"n","type":"int"}]}]}
     ]}"#;
-    let mut value = json!({"id":42,"payload":"\u{0}\u{80}\u{ff}","code":"AB","status":"ON","tags":["x","y"],"counts":{"a":1,"b":2},"choice":null});
+    let mut value = json!({"id":42,"payload":[0,128,255],"code":[65,66],"status":"ON","tags":["x","y"],"counts":{"a":1,"b":2},"choice":null});
     for choice in [
         Json::Null,
-        json!({"string":"x"}),
-        json!({"example.Code":"CD"}),
-        json!({"example.Status":"OFF"}),
-        json!({"example.Child":{"n":7}}),
+        json!("x"),
+        json!([67, 68]),
+        json!("OFF"),
+        json!({"n":7}),
     ] {
         value["choice"] = choice;
         assert_eq!(roundtrip(schema, &value.to_string()), vec![value.clone()]);
@@ -98,16 +119,20 @@ fn complex_types_and_qualified_union_tags() {
 }
 
 #[test]
-fn recursive_references_and_distinct_union_branches() {
+fn recursive_references_and_ambiguous_unions() {
     let schema = r#"{"type":"record","name":"tree.Node","fields":[{"name":"value","type":["int","long","double"]},{"name":"next","type":["null","Node"]}]}"#;
-    let input =
-        json!({"value":{"long":7},"next":{"tree.Node":{"value":{"double":2.0},"next":null}}});
+    let input = json!({"value":7,"next":{"value":2.5,"next":null}});
     assert_eq!(roundtrip(schema, &input.to_string()), vec![input]);
     let schema = r#"[{"type":"record","name":"A","fields":[{"name":"n","type":"int"}]},{"type":"record","name":"B","fields":[{"name":"n","type":"int"}]}]"#;
-    assert_eq!(
-        roundtrip(schema, r#"{"B":{"n":1}}"#),
-        vec![json!({"B":{"n":1}})]
-    );
+    assert_eq!(roundtrip(schema, r#"{"n":1}"#), vec![json!({"n":1})]);
+    // Plain JSON does not carry Avro branch names. The first match wins.
+    let avro = from_json(schema, r#"{"n":1}"#);
+    let value = Reader::new(avro.as_slice())
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap();
+    assert!(matches!(value, Value::Union(0, _)));
 }
 
 #[test]
@@ -129,20 +154,24 @@ fn logical_types_use_physical_json_encoding() {
             r#""550e8400-e29b-41d4-a716-446655440000""#,
         ),
         (
+            r#"{"type":"fixed","name":"Id","size":16,"logicalType":"uuid"}"#,
+            r#""550e8400-e29b-41d4-a716-446655440000""#,
+        ),
+        (
             r#"{"type":"bytes","logicalType":"decimal","precision":8,"scale":2}"#,
-            r#""\u0004\u00d2""#,
+            "[4,210]",
         ),
         (
             r#"{"type":"fixed","name":"Money","size":4,"logicalType":"decimal","precision":8,"scale":2}"#,
-            r#""\u0000\u0000\u0004\u00d2""#,
+            "[0,0,4,210]",
         ),
         (
             r#"{"type":"fixed","name":"Span","size":12,"logicalType":"duration"}"#,
-            r#""\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000""#,
+            "[0,0,0,0,0,0,0,0,0,0,0,0]",
         ),
         (
             r#"["null",{"type":"long","logicalType":"timestamp-millis"}]"#,
-            r#"null {"long":12345}"#,
+            "null 12345",
         ),
     ] {
         assert_eq!(
@@ -180,7 +209,7 @@ fn reads_containers_created_with_apache_avro_writer() {
     let avro = writer.into_inner().unwrap();
     assert_eq!(
         json_values(&success(&["tojson", "-"], &avro)),
-        vec![json!({"long":12}), Json::Null]
+        vec![json!(12), Json::Null]
     );
 }
 
@@ -362,21 +391,21 @@ fn rejects_malformed_json_and_values_that_do_not_match_schema() {
         ("\"int\"", "1.5"),
         ("\"long\"", "9223372036854775808"),
         ("\"boolean\"", "1"),
-        ("\"bytes\"", "[1,2]"),
+        ("\"bytes\"", "[256]"),
+        ("\"bytes\"", "[-1]"),
+        ("\"bytes\"", "[1.5]"),
         ("\"bytes\"", "\"😀\""),
         (r#"{"type":"fixed","name":"F","size":2}"#, "\"a\""),
-        (r#"["null","string"]"#, "\"untagged\""),
+        (r#"["null","string"]"#, r#"{"string":"tagged"}"#),
         (r#"["null","string"]"#, r#"{"int":1}"#),
         (r#"["null","string"]"#, r#"{"string":"x","null":null}"#),
         (r#"{"type":"enum","name":"E","symbols":["A"]}"#, "\"B\""),
         (
-            r#"{"type":"record","name":"R","fields":[{"name":"a","type":"int","default":0}]}"#,
+            r#"{"type":"record","name":"R","fields":[{"name":"a","type":"int"}]}"#,
             "{}",
         ),
-        (
-            r#"{"type":"record","name":"R","fields":[]}"#,
-            r#"{"extra":1}"#,
-        ),
+        ("\"double\"", "\"Infinity\""),
+        ("\"float\"", "\"NaN\""),
         ("\"int\"", "1 {bad"),
     ] {
         let output = invoke(&["fromjson", "--schema", schema, "-"], value.as_bytes());

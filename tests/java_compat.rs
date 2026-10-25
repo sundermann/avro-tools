@@ -50,46 +50,30 @@ fn values(bytes: &[u8]) -> Vec<Value> {
 
 #[test]
 #[ignore = "requires Java and AVRO_TOOLS_JAR"]
-fn all_codecs_work_in_both_directions_with_avro_json_types() {
-    let schema = r#"{"type":"record","name":"demo.Event","fields":[
-        {"name":"id","type":"long"},
-        {"name":"flag","type":"boolean"},
-        {"name":"float","type":"float"},
-        {"name":"double","type":"double"},
-        {"name":"bytes","type":"bytes"},
-        {"name":"fixed","type":{"type":"fixed","name":"Code","size":2}},
-        {"name":"enum","type":{"type":"enum","name":"Kind","symbols":["A","B"]}},
-        {"name":"array","type":{"type":"array","items":"int"}},
-        {"name":"map","type":{"type":"map","values":"string"}},
-        {"name":"choice","type":["null","string","Code","Kind"]},
-        {"name":"next","type":["null","Event"]}
+fn containers_interoperate_with_different_json_formats_for_every_codec() {
+    let schema = r#"{"type":"record","name":"Event","fields":[
+        {"name":"data","type":"bytes"},
+        {"name":"code","type":{"type":"fixed","name":"Code","size":2}},
+        {"name":"choice","type":["null","string"]},
+        {"name":"kind","type":{"type":"enum","name":"Kind","symbols":["ON","OFF"]}}
     ]}"#;
-    let first = json!({"id":9223372036854775807_i64,"flag":true,"float":0.1,"double":1.25,"bytes":"\u{0}\u{80}\u{ff}","fixed":"AB","enum":"A","array":[1,2],"map":{"k":"世界😀"},"choice":{"demo.Code":"CD"},"next":null});
-    let mut second = first.clone();
-    second["choice"] = json!({"demo.Kind":"B"});
-    second["next"] = json!({"demo.Event":first});
-    let input = format!("{first}\n{second}");
-    let mut expected = vec![first, second];
-    // JsonEncoder writes a float through its double overload.
-    for value in &mut expected {
-        value["float"] = json!(f64::from(0.1_f32));
-    }
-    expected[1]["next"]["demo.Event"]["float"] = json!(f64::from(0.1_f32));
+    let plain = json!({"data":[0,128,255],"code":[65,66],"choice":"hello","kind":"ON"});
+    let java =
+        json!({"data":"\u{0}\u{80}\u{ff}","code":"AB","choice":{"string":"hello"},"kind":"ON"});
     for codec in ["null", "deflate", "snappy", "bzip2", "xz", "zstandard"] {
         for producer_java in [false, true] {
-            // Java 1.12.1 passes its default -1 to XZ, which rejects it.
-            let level = if codec == "xz" { "6" } else { "-1" };
+            let input = if producer_java { &java } else { &plain };
+            let expected = if producer_java { &plain } else { &java };
             let avro = run(
                 producer_java,
                 &[
-                    "fromjson", "--schema", schema, "--codec", codec, "--level", level, "-",
+                    "fromjson", "--schema", schema, "--codec", codec, "--level", "6", "-",
                 ],
-                input.as_bytes(),
+                input.to_string().as_bytes(),
             );
-            let actual = run(!producer_java, &["tojson", "-"], &avro);
             assert_eq!(
-                values(&actual),
-                expected,
+                values(&run(!producer_java, &["tojson", "-"], &avro)),
+                vec![expected.clone()],
                 "codec={codec}, producer_java={producer_java}"
             );
         }
@@ -98,47 +82,62 @@ fn all_codecs_work_in_both_directions_with_avro_json_types() {
 
 #[test]
 #[ignore = "requires Java and AVRO_TOOLS_JAR"]
-fn aliases_enum_defaults_and_reordered_named_unions_match_java() {
+fn logical_types_use_plain_json_with_interoperable_containers() {
+    let schema = r#"{"type":"record","name":"R","fields":[
+        {"name":"date","type":{"type":"int","logicalType":"date"}},
+        {"name":"decimal","type":{"type":"bytes","logicalType":"decimal","precision":8,"scale":2}},
+        {"name":"uuid","type":{"type":"string","logicalType":"uuid"}},
+        {"name":"value","type":["int","long","double"]}
+    ]}"#;
+    let plain = json!({"date":20000,"decimal":[4,210],"uuid":"550e8400-e29b-41d4-a716-446655440000","value":7});
+    let java = json!({"date":20000,"decimal":"\u{4}Ò","uuid":"550e8400-e29b-41d4-a716-446655440000","value":{"long":7}});
+    let avro = run(
+        true,
+        &["fromjson", "--schema", schema, "-"],
+        java.to_string().as_bytes(),
+    );
+    assert_eq!(
+        values(&run(false, &["tojson", "-"], &avro)),
+        vec![plain.clone()]
+    );
+    let avro = run(
+        false,
+        &["fromjson", "--schema", schema, "-"],
+        plain.to_string().as_bytes(),
+    );
+    let mut expected = java;
+    expected["value"] = json!({"int":7}); // Plain JSON selects the first matching branch.
+    assert_eq!(values(&run(true, &["tojson", "-"], &avro)), vec![expected]);
+}
+
+#[test]
+#[ignore = "requires Java and AVRO_TOOLS_JAR"]
+fn reads_java_containers_with_schema_evolution() {
     let writer = include_str!("fixtures/evolution-writer.avsc");
     let reader = include_str!("fixtures/evolution-reader.avsc");
-    let input = include_bytes!("fixtures/evolution-input.json");
-    let avro = run(true, &["fromjson", "--schema", writer, "-"], input);
-    let args = ["tojson", "--reader-schema", reader, "-"];
+    let mut input: Value =
+        serde_json::from_str(include_str!("fixtures/evolution-input.json")).unwrap();
+    input["choice"] = json!({"example.B":{"n":7}});
+    input["token"] = json!("AB");
+    let expected = values(include_bytes!("fixtures/evolution-expected.json"));
+    let avro = run(
+        true,
+        &["fromjson", "--schema", writer, "-"],
+        input.to_string().as_bytes(),
+    );
     assert_eq!(
-        values(&run(false, &args, &avro)),
-        values(&run(true, &args, &avro))
+        values(&run(
+            false,
+            &["tojson", "--reader-schema", reader, "-"],
+            &avro
+        )),
+        expected
     );
 }
 
 #[test]
 #[ignore = "requires Java and AVRO_TOOLS_JAR"]
-fn logical_types_and_numeric_union_tags_match_java() {
-    let schema = r#"{"type":"record","name":"R","fields":[
-        {"name":"date","type":{"type":"int","logicalType":"date"}},
-        {"name":"time","type":{"type":"long","logicalType":"time-micros"}},
-        {"name":"timestamp","type":{"type":"long","logicalType":"timestamp-millis"}},
-        {"name":"decimal","type":{"type":"bytes","logicalType":"decimal","precision":8,"scale":2}},
-        {"name":"money","type":{"type":"fixed","name":"Money","size":4,"logicalType":"decimal","precision":8,"scale":2}},
-        {"name":"uuid","type":{"type":"string","logicalType":"uuid"}},
-        {"name":"value","type":["int","long","double"]}
-    ]}"#;
-    let input = json!({"date":20000,"time":1234567,"timestamp":1720000000000_i64,"decimal":"\u{4}Ò","money":"\u{0}\u{0}\u{4}Ò","uuid":"550e8400-e29b-41d4-a716-446655440000","value":{"long":7}});
-    for producer_java in [false, true] {
-        let avro = run(
-            producer_java,
-            &["fromjson", "--schema", schema, "-"],
-            input.to_string().as_bytes(),
-        );
-        assert_eq!(
-            values(&run(!producer_java, &["tojson", "-"], &avro)),
-            vec![input.clone()]
-        );
-    }
-}
-
-#[test]
-#[ignore = "requires Java and AVRO_TOOLS_JAR"]
-fn compression_levels_head_pretty_and_reader_schema_match_java() {
+fn compression_levels_head_pretty_and_reader_schema() {
     let input = (0..15).map(|n| format!("{n}\n")).collect::<String>();
     for (codec, level) in [("deflate", "2"), ("xz", "0"), ("zstandard", "-3")] {
         for producer_java in [false, true] {
@@ -157,22 +156,9 @@ fn compression_levels_head_pretty_and_reader_schema_match_java() {
             ] {
                 assert_eq!(
                     values(&run(false, &args, &avro)),
-                    values(&run(true, &args, &avro)),
-                    "{args:?}, {codec}, producer_java={producer_java}"
+                    values(&run(true, &args, &avro))
                 );
             }
         }
     }
-    let writer = r#"{"type":"record","name":"Event","fields":[{"name":"id","type":"int"},{"name":"remove","type":"string"}]}"#;
-    let reader = r#"{"type":"record","name":"Event","fields":[{"name":"added","type":"string","default":"new"},{"name":"id","type":"long"}]}"#;
-    let avro = run(
-        true,
-        &["fromjson", "--schema", writer, "-"],
-        br#"{"id":1,"remove":"old"}"#,
-    );
-    let args = ["tojson", "--reader-schema", reader, "-"];
-    assert_eq!(
-        values(&run(false, &args, &avro)),
-        values(&run(true, &args, &avro))
-    );
 }

@@ -16,7 +16,7 @@ use apache_avro::{Reader, Schema};
 use clap::Parser;
 use cli::{Cli, Command, FromJson, ToJson};
 use container::ContainerWriter;
-use json::AvroJson;
+use json::JsonDecoder;
 use resolution::Resolver;
 
 fn main() -> ExitCode {
@@ -81,11 +81,6 @@ fn to_json(args: ToJson, output: &mut impl Write) -> Result<()> {
         .as_ref()
         .map(|schema| Resolver::new(&writer_schema, schema))
         .transpose()?;
-    let output_schema = schema
-        .as_ref()
-        .unwrap_or_else(|| reader.writer_schema())
-        .clone();
-    let json = AvroJson::new(&output_schema)?;
     let mut count = 0_u64;
     // take() is deliberately before reading: --head=0 must not decode any records.
     for value in reader.take(usize::try_from(limit).unwrap_or(usize::MAX)) {
@@ -98,8 +93,7 @@ fn to_json(args: ToJson, output: &mut impl Write) -> Result<()> {
         } else {
             value
         };
-        let value = json
-            .encode(&value)
+        let value = serde_json::Value::try_from(value)
             .with_context(|| format!("encoding JSON datum {count}"))?;
         if args.pretty {
             serde_json::to_writer_pretty(&mut *output, &value)?;
@@ -118,7 +112,7 @@ fn from_json(args: FromJson, output: &mut impl Write) -> Result<()> {
     let schema = load_schema(args.schema.as_deref(), args.schema_file.as_deref())?
         .context("need an input schema file (--schema-file) or inline schema (--schema)")?;
     let codec = codec::compression(&args.codec, args.level)?;
-    let json = AvroJson::new(&schema)?;
+    let json = JsonDecoder::new(&schema)?;
     let input = open_input(&args.input)?;
     let mut writer = ContainerWriter::new(&schema, output, codec)?;
     // Stream values, not lines: pretty-printed and whitespace-separated JSON are valid too.

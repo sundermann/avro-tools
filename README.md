@@ -1,9 +1,11 @@
 # avro-tools
 
-A Rust command-line tool for Apache Avro object container files, using
-[`apache-avro`](https://docs.rs/apache-avro/0.22.0/apache_avro/).
-It implements the `tojson` and `fromjson` option set from
+A Rust command-line tool for converting Apache Avro object container files to
+and from plain JSON, using [`apache-avro`](https://docs.rs/apache-avro/0.22.0/apache_avro/)
+and `serde_json`. It keeps the `tojson` and `fromjson` option names from
 [Java avro-tools 1.12.1](https://github.com/apache/avro/tree/release-1.12.1/lang/java/tools/src/main/java/org/apache/avro/tool).
+Its JSON format uses ordinary values and byte arrays; it does not reproduce
+Java's Avro JSON encoding.
 
 ## Build
 
@@ -82,24 +84,30 @@ Input is a stream of JSON values: newline-delimited, whitespace-separated, and
 multiline values are accepted. Empty input creates a valid empty Avro container.
 Records are processed incrementally; the entire input is not loaded into memory.
 
-## Avro JSON encoding
+## Plain JSON
 
-This uses Avro's schema-directed JSON representation:
+`tojson` uses the Apache Avro crate's conversion to `serde_json::Value`, then
+`serde_json::to_writer` (or `to_writer_pretty`). `fromjson` streams values with
+`serde_json::Deserializer` and uses the schema to resolve their Avro types.
 
-- A non-null union value has one type tag, for example `{"string":"hello"}`.
-  Named branches use their fully qualified name, such as `{"example.Event":{...}}`.
-  A null branch is simply `null`.
-- Bytes and fixed values are JSON strings whose code points U+0000–U+00FF map
-  directly to bytes. They are not base64 or integer arrays.
-- Enums are symbol strings. Logical types use their underlying Avro encoding:
-  dates/timestamps are integers, decimals are byte strings, and UUIDs are strings
-  or fixed byte strings according to their underlying type.
-- Every record field must be present in input, even if its schema defines a
-  default. Defaults are used for reader-schema evolution.
+- Unions are plain values: `"hello"`, `null`, or `{"id":1}`. There are no type tags.
+  When several union branches accept a value, `fromjson` selects the first matching
+  branch in schema order. Plain JSON cannot preserve that branch identity.
+- Bytes and fixed values are integer arrays, for example `[0,128,255]`.
+- Enums are symbol strings. Dates and timestamps are integers. Decimals and
+  durations use byte arrays, and UUIDs are strings.
+- Missing record fields use schema defaults when available; otherwise they are
+  errors. Extra fields in input objects are ignored.
+- Numbers must be finite. Avro NaN and infinity values produce an error because
+  standard JSON cannot represent them.
 
-Output whitespace, map key order, block sizes, and random container sync markers
-may differ from Java's output. The data format is interoperable. Errors go to
-stderr and produce a nonzero exit status.
+For a field whose schema is `["null","string"]`, write `{"name":"Ada"}` instead
+of Java's `{"name":{"string":"Ada"}}`. For a bytes field, write
+`{"data":[65,66]}` instead of `{"data":"AB"}`.
+
+The Avro container files remain interoperable with other Avro tools. The JSON
+format differs from Java's, and an Avro → JSON → Avro round trip can change an
+ambiguous union branch. Errors go to stderr and produce a nonzero exit status.
 
 ## Tests
 
@@ -114,5 +122,6 @@ Optional interoperability tests use the official Java avro-tools jar:
 AVRO_TOOLS_JAR=/path/to/avro-tools-1.12.1.jar cargo test --test java_compat -- --ignored
 ```
 
-They verify conversion in both directions for every codec, Avro JSON types,
-logical types, compression levels, `--head`, pretty printing, and schema evolution.
+They verify Avro container interoperability in both directions for every codec,
+while accounting for the different JSON formats, plus logical types, compression
+levels, `--head`, pretty printing, and schema evolution.
