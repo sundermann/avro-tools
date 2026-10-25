@@ -1,0 +1,1 @@
+{"id": 42, "choice": {"example.B": {"n": 7}}, "kind": "UNKNOWN", "token": "AB", "items": [1, 2], "counts": {"x": 3.0}, "extra": "\u00ff", "optional": null, "nested": {"n": 3}}

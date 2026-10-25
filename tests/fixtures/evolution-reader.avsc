@@ -1,0 +1,19 @@
+{
+  "type": "record",
+  "name": "example.New",
+  "aliases": ["Old"],
+  "fields": [
+    {"name": "id", "aliases": ["old_id"], "type": "long"},
+    {"name": "choice", "type": [
+      {"type": "record", "name": "B", "fields": [{"name": "n", "type": "long"}]},
+      {"type": "record", "name": "A", "fields": [{"name": "n", "type": "long"}]}
+    ]},
+    {"name": "kind", "type": {"type": "enum", "name": "Kind", "symbols": ["A", "UNKNOWN"], "default": "UNKNOWN"}},
+    {"name": "token", "type": {"type": "fixed", "name": "NewToken", "aliases": ["Token"], "size": 2}},
+    {"name": "items", "type": {"type": "array", "items": "long"}},
+    {"name": "counts", "type": {"type": "map", "values": "double"}},
+    {"name": "extra", "type": "bytes", "default": "\u00ff"},
+    {"name": "optional", "type": ["null", "string"], "default": null},
+    {"name": "nested", "type": {"type": "record", "name": "Nested", "fields": [{"name": "n", "type": "int", "default": 3}]}, "default": {}}
+  ]
+}

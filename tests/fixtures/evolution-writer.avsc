@@ -1,0 +1,15 @@
+{
+  "type": "record",
+  "name": "example.Old",
+  "fields": [
+    {"name": "old_id", "type": "int"},
+    {"name": "choice", "type": [
+      {"type": "record", "name": "A", "fields": [{"name": "n", "type": "int"}]},
+      {"type": "record", "name": "B", "fields": [{"name": "n", "type": "int"}]}
+    ]},
+    {"name": "kind", "type": {"type": "enum", "name": "Kind", "symbols": ["A", "B"]}},
+    {"name": "token", "type": {"type": "fixed", "name": "Token", "size": 2}},
+    {"name": "items", "type": {"type": "array", "items": "int"}},
+    {"name": "counts", "type": {"type": "map", "values": "int"}}
+  ]
+}
